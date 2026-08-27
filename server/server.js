@@ -2,6 +2,7 @@ const express = require("express");
 const cors = require("cors");
 const Database = require("better-sqlite3");
 const path = require("path");
+const fs = require("fs");
 const { calculateAiHarvestAdvice } = require("./services/aiAdvisor");
 
 const app = express();
@@ -14,7 +15,19 @@ app.use(cors({
 }));
 app.use(express.json());
 
-const dbPath = path.join(__dirname, "smartfarm.db");
+let dbPath = path.join(__dirname, "smartfarm.db");
+if (process.env.NETLIFY || process.env.AWS_LAMBDA_FUNCTION_NAME) {
+  const tmpDbPath = path.join("/tmp", "smartfarm.db");
+  try {
+    if (!fs.existsSync(tmpDbPath) && fs.existsSync(dbPath)) {
+      fs.copyFileSync(dbPath, tmpDbPath);
+    }
+  } catch (e) {
+    console.warn("DB copy to /tmp warning:", e.message);
+  }
+  dbPath = tmpDbPath;
+}
+
 const db = new Database(dbPath);
 
 db.exec(`
@@ -765,6 +778,10 @@ app.get("/api/health", (req, res) => {
   });
 });
 
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`SmartFarm backend running on port ${PORT} (0.0.0.0)`);
-});
+if (require.main === module) {
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`SmartFarm backend running on port ${PORT} (0.0.0.0)`);
+  });
+}
+
+module.exports = app;
