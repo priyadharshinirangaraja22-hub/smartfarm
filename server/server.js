@@ -7,7 +7,11 @@ const { calculateAiHarvestAdvice } = require("./services/aiAdvisor");
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-app.use(cors());
+app.use(cors({
+  origin: "*",
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"]
+}));
 app.use(express.json());
 
 const dbPath = path.join(__dirname, "smartfarm.db");
@@ -96,7 +100,6 @@ const seedDatabase = () => {
         VALUES (?, ?, ?, ?, ?)
       `);
       insertUser.run("Demo Farmer", "farmer@smartfarm.com", "farmer123", "farmer", "Tiruppur");
-      insertUser.run("Agri Buyer", "buyer@smartfarm.com", "buyer123", "buyer", "Coimbatore");
       insertUser.run("Fresh Consumer", "consumer@smartfarm.com", "consumer123", "consumer", "Tiruppur");
     }
 
@@ -762,6 +765,6 @@ app.get("/api/health", (req, res) => {
   });
 });
 
-app.listen(PORT, () => {
-  console.log(`SmartFarm backend running at http://localhost:${PORT}`);
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`SmartFarm backend running on port ${PORT} (0.0.0.0)`);
 });

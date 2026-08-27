@@ -163,7 +163,9 @@ const explanationTemplates = {
 };
 
 /**
- * Calculates AI Harvest and Market Advice
+ * Calculates AI Harvest and Market Advice based on net profit comparison,
+ * transportation costs, handling costs, storage costs, spoilage losses,
+ * storage capacity limits, and active market availability.
  */
 function calculateAiHarvestAdvice({
   crop = "Tomato",
@@ -174,19 +176,48 @@ function calculateAiHarvestAdvice({
   markets = []
 }) {
   const selectedCrop = defaultCrops[crop] || defaultCrops.Tomato;
-  const qty = Math.max(1, Number(quantity) || 1000);
+  const qty = Math.max(0, Number(quantity) || 0);
   const waitDays = Math.max(1, Number(waitingDays) || 3);
 
-  const transportPerKm = Math.max(0, Number(costSettings.transportPerKm) || 5);
-  const storagePerKgDay = Math.max(0, Number(costSettings.storagePerKgDay) || 1);
-  const handling = Math.max(0, Number(costSettings.handling) || 300);
+  const transportPerKm = Math.max(0, costSettings.transportPerKm !== undefined && !isNaN(costSettings.transportPerKm) ? Number(costSettings.transportPerKm) : 5);
+  const storagePerKgDay = Math.max(0, costSettings.storagePerKgDay !== undefined && !isNaN(costSettings.storagePerKgDay) ? Number(costSettings.storagePerKgDay) : 1);
+  const handling = Math.max(0, costSettings.handling !== undefined && !isNaN(costSettings.handling) ? Number(costSettings.handling) : 300);
+  const storageCapacity = (costSettings.storageCapacity !== undefined && costSettings.storageCapacity !== null && costSettings.storageCapacity !== "" && !isNaN(costSettings.storageCapacity)) ? Number(costSettings.storageCapacity) : null;
 
+  // Filter available markets
   const marketList = (Array.isArray(markets) && markets.length > 0)
     ? markets.filter(m => m.available !== false)
-    : defaultMarketsList;
+    : defaultMarketsList.filter(m => m.available !== false);
+
+  if (qty <= 0 || marketList.length === 0) {
+    return {
+      recommendation: "HARVEST NOW",
+      recommendedHarvestDate: "Today / Tomorrow",
+      bestMarket: marketList[0]?.name || "Local Field Market",
+      expectedProfit: 0,
+      confidenceScore: 70,
+      riskLevel: "MEDIUM",
+      why: marketList.length === 0
+        ? ["No active/available markets found. Please check operational markets."]
+        : ["Harvest quantity is 0 kg."],
+      weatherRiskAlert: "No market operational.",
+      evaluatedMarkets: [],
+      metrics: {
+        crop,
+        quantity: qty,
+        waitingDays: waitDays,
+        currentBestProfit: 0,
+        waitingBestProfit: 0,
+        currentSaleableKg: 0,
+        waitingSaleableKg: 0,
+        spoilageRateCurrent: "0%",
+        spoilageRateWaiting: "0%"
+      }
+    };
+  }
 
   const currentSpoilage = selectedCrop.baseSpoilage;
-  const waitingSpoilage = Math.min(90, currentSpoilage + waitDays * 2);
+  const waitingSpoilage = Math.min(95, currentSpoilage + waitDays * 2);
   const addedSpoilage = waitingSpoilage - currentSpoilage;
 
   const currentSaleable = qty * (1 - currentSpoilage / 100);
@@ -197,8 +228,8 @@ function calculateAiHarvestAdvice({
     const distance = Number(m.distance) || 0;
     const transportCost = distance * transportPerKm;
 
-    const currentPrice = selectedCrop.basePrice * multiplier;
-    const futurePrice = currentPrice * selectedCrop.futureGrowth;
+    const currentPrice = m.currentPrice !== undefined ? Number(m.currentPrice) : (selectedCrop.basePrice * multiplier);
+    const futurePrice = m.futurePrice !== undefined ? Number(m.futurePrice) : (currentPrice * (m.futureGrowth || selectedCrop.futureGrowth));
 
     const currentRevenue = currentSaleable * currentPrice;
     const waitingRevenue = waitingSaleable * futurePrice;
@@ -208,23 +239,33 @@ function calculateAiHarvestAdvice({
     const waitingProfit = waitingRevenue - transportCost - handling - storageCost;
 
     return {
-      id: m.id,
+      id: m.id || m.name,
       name: m.name,
       distance,
       currentPrice,
       futurePrice,
       transportCost,
+      handlingCost: handling,
       storageCost,
+      currentSpoilage,
+      waitingSpoilage,
+      currentRevenue,
+      waitingRevenue,
       currentProfit,
       waitingProfit,
-      diff: waitingProfit - currentProfit
+      diff: waitingProfit - currentProfit,
+      available: true
     };
   });
 
   const bestCurrent = [...evaluatedMarkets].sort((a, b) => b.currentProfit - a.currentProfit)[0] || evaluatedMarkets[0];
   const bestWaiting = [...evaluatedMarkets].sort((a, b) => b.waitingProfit - a.waitingProfit)[0] || evaluatedMarkets[0];
 
-  const shouldWait = bestWaiting && bestWaiting.waitingProfit > bestCurrent.currentProfit;
+  // Storage Capacity Constraint Check
+  const isStorageExceeded = storageCapacity !== null && qty > storageCapacity;
+
+  // Decision rule: Net Profit Comparison + Storage Constraint
+  const shouldWait = !isStorageExceeded && bestWaiting && bestWaiting.waitingProfit > bestCurrent.currentProfit;
   const recommendation = shouldWait ? "WAIT" : "HARVEST NOW";
   const bestMarket = shouldWait ? bestWaiting.name : bestCurrent.name;
   const expectedProfit = Math.round(shouldWait ? bestWaiting.waitingProfit : bestCurrent.currentProfit);
@@ -242,7 +283,9 @@ function calculateAiHarvestAdvice({
 
   // Risk Level Classification
   let riskLevel = "LOW";
-  if (shouldWait) {
+  if (isStorageExceeded) {
+    riskLevel = "HIGH";
+  } else if (shouldWait) {
     if (waitDays >= 5 || waitingSpoilage >= 16) {
       riskLevel = "HIGH";
     } else if (waitDays >= 3 || waitingSpoilage >= 10) {
@@ -258,9 +301,13 @@ function calculateAiHarvestAdvice({
   const langKey = explanationTemplates[language] ? language : "English";
   const templates = explanationTemplates[langKey];
 
-  const why = shouldWait
+  let why = shouldWait
     ? templates.wait(bestMarket, expectedProfit, profitDiff, waitDays)
     : templates.harvestNow(bestMarket, expectedProfit, addedSpoilage);
+
+  if (isStorageExceeded) {
+    why.unshift(`⚠️ STORAGE CAPACITY EXCEEDED: Harvest quantity (${qty} kg) exceeds maximum warehouse storage limit (${storageCapacity} kg). Recommendation forced to HARVEST NOW.`);
+  }
 
   const weatherRiskAlert = (waitDays >= 3 || riskLevel === "MEDIUM" || riskLevel === "HIGH")
     ? templates.weatherAlertRain
@@ -275,6 +322,7 @@ function calculateAiHarvestAdvice({
     riskLevel,
     why,
     weatherRiskAlert,
+    storageCapacityExceeded: isStorageExceeded,
     evaluatedMarkets,
     metrics: {
       crop,

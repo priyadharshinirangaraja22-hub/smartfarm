@@ -1,7 +1,7 @@
 import { useMemo, useState, useEffect } from "react";
 import "./index.css";
 
-const API_BASE = "http://localhost:5000/api";
+const API_BASE = (import.meta.env && import.meta.env.VITE_API_URL) || "http://localhost:5000/api";
 
 const testBackend = async () => {
   try {
@@ -452,6 +452,7 @@ function App() {
     storagePerKgDay: 1,
     handling: 300,
     waitingDays: 3,
+    storageCapacity: 5000,
   });
 
   /* =========================
@@ -928,20 +929,12 @@ function App() {
           a.waitingProfit
       )[0];
 
-    if (!bestCurrent) {
-      return {
-        marketResults: [],
-        bestCurrent: null,
-        bestWaiting: null,
-        recommendation:
-          "HARVEST NOW",
-      };
-    }
+    const isStorageExceeded = costSettings.storageCapacity && quantity > Number(costSettings.storageCapacity);
 
     const recommendation =
+      !isStorageExceeded &&
       bestWaiting &&
-      bestWaiting.waitingProfit >
-        bestCurrent.currentProfit
+      bestWaiting.waitingProfit > bestCurrent.currentProfit
         ? "WAIT"
         : "HARVEST NOW";
 
@@ -950,6 +943,7 @@ function App() {
       bestCurrent,
       bestWaiting,
       recommendation,
+      storageCapacityExceeded: isStorageExceeded,
     };
   }, [
     harvestInput,
@@ -964,40 +958,36 @@ function App() {
   const [aiAdvice, setAiAdvice] = useState(null);
   const [loadingAiAdvice, setLoadingAiAdvice] = useState(false);
 
-  useEffect(() => {
-    let isMounted = true;
-    const fetchAi = async () => {
-      setLoadingAiAdvice(true);
-      try {
-        const res = await fetch(`${API_BASE}/ai/harvest-advisor`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            crop: harvestInput.crop,
-            quantity: Number(harvestInput.quantity) || 1000,
-            waitingDays: Number(costSettings.waitingDays) || 3,
-            language: language,
-            costSettings: costSettings,
-            markets: markets,
-          }),
-        });
-        if (res.ok) {
-          const data = await res.json();
-          if (isMounted && data.success) {
-            setAiAdvice(data);
-          }
+  const runAiAdvisorApi = async () => {
+    setLoadingAiAdvice(true);
+    try {
+      const res = await fetch(`${API_BASE}/ai/harvest-advisor`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          crop: harvestInput.crop,
+          quantity: Number(harvestInput.quantity) || 1000,
+          waitingDays: Number(costSettings.waitingDays) || 3,
+          language: language,
+          costSettings: costSettings,
+          markets: markets,
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success) {
+          setAiAdvice(data);
         }
-      } catch (err) {
-        console.warn("AI Advisor request offline:", err);
-      } finally {
-        if (isMounted) setLoadingAiAdvice(false);
       }
-    };
+    } catch (err) {
+      console.warn("AI Advisor request offline:", err);
+    } finally {
+      setLoadingAiAdvice(false);
+    }
+  };
 
-    fetchAi();
-    return () => {
-      isMounted = false;
-    };
+  useEffect(() => {
+    runAiAdvisorApi();
   }, [harvestInput, costSettings, markets, language]);
 
   /* =========================
@@ -1155,13 +1145,6 @@ function App() {
     ["profile", "👨‍🌾 Farm Profile"],
   ];
 
-  const customerMenu = [
-    ["dashboard", t("dashboard")],
-    ["marketplace", `🛒 ${t("marketplace")}`],
-    ["orders", `📦 ${t("orders")}`],
-    ["help", `🆘 ${t("help")}`],
-  ];
-
   const consumerMenu = [
     ["dashboard", t("dashboard")],
     ["marketplace", "🥗 Fresh Produce"],
@@ -1169,12 +1152,7 @@ function App() {
     ["help", `🆘 ${t("help")}`],
   ];
 
-  const menu =
-    role === "farmer"
-      ? farmerMenu
-      : role === "consumer"
-      ? consumerMenu
-      : customerMenu;
+  const menu = role === "consumer" ? consumerMenu : farmerMenu;
 
   return (
     <div className="app">
@@ -1223,16 +1201,6 @@ function App() {
           </button>
 
           <button
-            className={role === "customer" ? "activeBtn" : ""}
-            onClick={() => {
-              setRole("customer");
-              setPage("marketplace");
-            }}
-          >
-            🏬 Buyer
-          </button>
-
-          <button
             className={role === "consumer" ? "activeBtn" : ""}
             onClick={() => {
               setRole("consumer");
@@ -1245,7 +1213,7 @@ function App() {
           {currentUser ? (
             <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
               <div className="userBadge">
-                👤 {currentUser.name}
+                👤 {currentUser.name} ({currentUser.role})
               </div>
               <button
                 className="secondary"
@@ -1278,14 +1246,13 @@ function App() {
             <strong>
               {role === "farmer"
                 ? "👨‍🌾 Farmer Mode"
-                : "🛒 Customer Mode"}
+                : "🥗 Consumer Mode"}
             </strong>
 
             <small>
               {role === "farmer"
-                ? farmerProfile.name ||
-                  "Set your profile"
-                : "Buy directly from farmers"}
+                ? farmerProfile.name || "Farm Management"
+                : "Direct Farm-Fresh Produce"}
             </small>
           </div>
 
@@ -1727,14 +1694,27 @@ function App() {
                     <input
                       type="number"
                       min="1"
-                      value={
-                        costSettings.waitingDays
-                      }
+                      value={costSettings.waitingDays}
                       onChange={(e) =>
                         setCostSettings({
                           ...costSettings,
-                          waitingDays:
-                            e.target.value,
+                          waitingDays: e.target.value,
+                        })
+                      }
+                    />
+                  </label>
+
+                  <label>
+                    Max Storage Capacity (kg)
+
+                    <input
+                      type="number"
+                      min="1"
+                      value={costSettings.storageCapacity || ""}
+                      onChange={(e) =>
+                        setCostSettings({
+                          ...costSettings,
+                          storageCapacity: e.target.value,
                         })
                       }
                     />
@@ -1881,18 +1861,6 @@ function App() {
 
                       <div className="metric">
                         <span>
-                          Saleable Quantity
-                        </span>
-                        <b>
-                          {decision.bestWaiting.waitingSaleable.toFixed(
-                            0
-                          )}{" "}
-                          kg
-                        </b>
-                      </div>
-
-                      <div className="metric">
-                        <span>
                           Storage
                         </span>
                         <b>
@@ -1919,35 +1887,19 @@ function App() {
 
                   </div>
 
-                  <div className="reasonGrid">
+                  <div className="infoNotice">
 
                     <div>
-                      💰
-                      <b>
-                        Price
-                      </b>
+                      💡
+                      <b>Strategy</b>
                       <small>
-                        Current and expected
-                        future price compared.
-                      </small>
-                    </div>
-
-                    <div>
-                      🚚
-                      <b>
-                        Transport
-                      </b>
-                      <small>
-                        Distance × transport
-                        cost per km.
+                        Based on profit net of transport, handling and storage.
                       </small>
                     </div>
 
                     <div>
                       ⚠️
-                      <b>
-                        Spoilage
-                      </b>
+                      <b>Spoilage</b>
                       <small>
                         Waiting increases
                         expected spoilage.
@@ -1956,9 +1908,7 @@ function App() {
 
                     <div>
                       🏪
-                      <b>
-                        Market
-                      </b>
+                      <b>Market</b>
                       <small>
                         Highest price is not
                         always highest profit.
@@ -1993,7 +1943,7 @@ function App() {
                       </div>
                     ) : aiAdvice ? (
                       <div className="aiAdvisorCard">
-                        <div className="aiTopGrid">
+                        <div className="aiTopGrid" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "12px", marginBottom: "16px" }}>
                           <div className="aiMetricBox">
                             <small>RECOMMENDED ACTION</small>
                             <strong className={aiAdvice.recommendation === "WAIT" ? "waitText" : "harvestText"}>
@@ -2003,19 +1953,45 @@ function App() {
                           </div>
 
                           <div className="aiMetricBox">
-                            <small>RECOMMENDED MARKET</small>
+                            <small>BEST MARKET</small>
                             <strong>{aiAdvice.bestMarket}</strong>
-                            <span>Optimal Net Profit</span>
+                            <span>Highest Net Return</span>
                           </div>
 
                           <div className="aiMetricBox">
-                            <small>PROJECTED NET PROFIT</small>
-                            <strong className="profitHighlight">
-                              ₹{aiAdvice.expectedProfit?.toLocaleString("en-IN")}
+                            <small>CURRENT NET PROFIT</small>
+                            <strong style={{ color: "#2563eb" }}>
+                              ₹{(aiAdvice.metrics?.currentBestProfit || decision.bestCurrent?.currentProfit || 0).toLocaleString("en-IN")}
                             </strong>
-                            <span>After Transport & Spoilage</span>
+                            <span>Harvest Today</span>
+                          </div>
+
+                          <div className="aiMetricBox">
+                            <small>WAITING NET PROFIT</small>
+                            <strong style={{ color: "#059669" }}>
+                              ₹{(aiAdvice.metrics?.waitingBestProfit || decision.bestWaiting?.waitingProfit || 0).toLocaleString("en-IN")}
+                            </strong>
+                            <span>In {costSettings.waitingDays || 3} Days</span>
+                          </div>
+
+                          <div className="aiMetricBox">
+                            <small>PROFIT DIFFERENCE</small>
+                            <strong className="profitHighlight">
+                              ₹{Math.abs((aiAdvice.metrics?.waitingBestProfit || 0) - (aiAdvice.metrics?.currentBestProfit || 0)).toLocaleString("en-IN")}
+                            </strong>
+                            <span>{aiAdvice.recommendation === "WAIT" ? "Gain by Waiting" : "Loss if Waiting"}</span>
                           </div>
                         </div>
+
+                        {aiAdvice.storageCapacityExceeded && (
+                          <div className="aiWeatherAlert" style={{ backgroundColor: "#fef2f2", borderColor: "#fca5a5", color: "#991b1b", marginBottom: "12px" }}>
+                            <span className="weatherIcon">⚠️</span>
+                            <div>
+                              <b>STORAGE CAPACITY WARNING:</b>
+                              <p>Total harvest quantity exceeds available warehouse storage limit. Harvest Now is recommended.</p>
+                            </div>
+                          </div>
+                        )}
 
                         {aiAdvice.weatherRiskAlert && (
                           <div className="aiWeatherAlert">
@@ -3466,7 +3442,6 @@ function App() {
                       style={{ padding: "10px", borderRadius: "8px", border: "1px solid #ccc", marginTop: "4px" }}
                     >
                       <option value="farmer">👨‍🌾 Farmer</option>
-                      <option value="buyer">🏬 Customer / Buyer</option>
                       <option value="consumer">🥗 Consumer</option>
                     </select>
                   </label>
@@ -3495,10 +3470,6 @@ function App() {
                 <button className="demoBtn" onClick={() => quickDemoLogin("farmer@smartfarm.com", "farmer123", "farmer")}>
                   <span>👨‍🌾 Demo Farmer</span>
                   <small>farmer@smartfarm.com</small>
-                </button>
-                <button className="demoBtn" onClick={() => quickDemoLogin("buyer@smartfarm.com", "buyer123", "customer")}>
-                  <span>🏬 Demo Buyer</span>
-                  <small>buyer@smartfarm.com</small>
                 </button>
                 <button className="demoBtn" onClick={() => quickDemoLogin("consumer@smartfarm.com", "consumer123", "consumer")}>
                   <span>🥗 Demo Consumer</span>
