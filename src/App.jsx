@@ -313,17 +313,11 @@ function App() {
     setTimeout(() => setToastMsg(""), 3500);
   };
 
-  const [currentUser, setCurrentUser] = useState(() => {
-    try {
-      const saved = localStorage.getItem("smartFarmUser");
-      return saved ? JSON.parse(saved) : { id: 1, name: "Demo Farmer", email: "farmer@smartfarm.com", role: "farmer", location: "Tiruppur" };
-    } catch {
-      return { id: 1, name: "Demo Farmer", email: "farmer@smartfarm.com", role: "farmer", location: "Tiruppur" };
-    }
-  });
+  const [currentUser, setCurrentUser] = useState(null);
 
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [authIsRegister, setAuthIsRegister] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
   const [authInput, setAuthInput] = useState({
     name: "",
     email: "",
@@ -339,23 +333,29 @@ function App() {
     setAuthError("");
     setAuthLoading(true);
     const endpoint = authIsRegister ? `${API_BASE}/auth/register` : `${API_BASE}/auth/login`;
+    const payload = authIsRegister
+      ? authInput
+      : { email: authInput.email, password: authInput.password };
 
     try {
       const res = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(authInput)
+        body: JSON.stringify(payload)
       });
       const data = await res.json();
       if (!res.ok || !data.success) {
         setAuthError(data.error || "Authentication failed");
         return;
       }
-      setCurrentUser(data.user);
-      setRole(data.user.role || "farmer");
-      localStorage.setItem("smartFarmUser", JSON.stringify(data.user));
+      const user = data.user;
+      setCurrentUser(user);
+      const userRole = user.role === "consumer" ? "consumer" : "farmer";
+      setRole(userRole);
+      setPage(userRole === "consumer" ? "marketplace" : "dashboard");
+      localStorage.setItem("smartFarmUser", JSON.stringify(user));
       setShowAuthModal(false);
-      triggerToast(`Welcome ${authIsRegister ? "" : "back"}, ${data.user.name}!`);
+      triggerToast(`Welcome ${authIsRegister ? "" : "back"}, ${user.name}!`);
     } catch (err) {
       setAuthError("Could not connect to backend server");
     } finally {
@@ -363,10 +363,35 @@ function App() {
     }
   };
 
-  const quickDemoLogin = (email, password, demoRole) => {
+  const quickDemoLogin = async (email, password, demoRole) => {
     setAuthInput({ email, password, name: "", role: demoRole, location: "Tiruppur" });
     setAuthIsRegister(false);
-    handleAuthSubmit();
+    setAuthError("");
+    setAuthLoading(true);
+
+    try {
+      const res = await fetch(`${API_BASE}/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        const user = data.user;
+        setCurrentUser(user);
+        const userRole = user.role === "consumer" ? "consumer" : "farmer";
+        setRole(userRole);
+        setPage(userRole === "consumer" ? "marketplace" : "dashboard");
+        localStorage.setItem("smartFarmUser", JSON.stringify(user));
+        triggerToast(`Welcome back, ${user.name}!`);
+      } else {
+        setAuthError((data && data.error) || "Invalid email or password");
+      }
+    } catch (err) {
+      setAuthError("Could not connect to backend server");
+    } finally {
+      setAuthLoading(false);
+    }
   };
 
   const handleLogout = () => {
@@ -688,6 +713,23 @@ function App() {
     localStorage.setItem("smartFarmOrders", JSON.stringify(data));
   };
 
+  const updateOrderStatus = async (orderId, newStatus) => {
+    try {
+      const res = await fetch(`${API_BASE}/orders/${orderId}/status`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: newStatus })
+      });
+      if (res.ok) {
+        triggerToast(`Booking #${orderId} marked as ${newStatus}`);
+      }
+    } catch (e) {
+      console.warn("Order status update offline:", e);
+    }
+    const updated = orders.map((o) => (o.id === orderId ? { ...o, status: newStatus } : o));
+    saveOrders(updated);
+  };
+
   const filteredListings = listings.filter(
     (item) =>
       item.available > 0 &&
@@ -726,9 +768,14 @@ function App() {
     const total =
       productTotal + deliveryCharge;
 
+    const custName = currentUser ? currentUser.name : "Customer";
     const newOrder = {
       id: Date.now(),
       listingId: item.id,
+      customerName: custName,
+      customerPhone: currentUser?.phone || "+91 98765 43210",
+      deliveryAddress: currentUser?.location || item.area || "Local Area",
+      deliveryDate: item.date,
       crop: item.crop,
       quantity: qty,
       farmer: item.farmer,
@@ -739,7 +786,7 @@ function App() {
       deliveryMethod: delivery,
       deliveryCharge,
       total,
-      status: "Pre-booked",
+      status: "Pending",
     };
 
     try {
@@ -748,7 +795,10 @@ function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           listingId: item.id,
-          customerName: "Customer",
+          customerName: custName,
+          customerPhone: newOrder.customerPhone,
+          deliveryAddress: newOrder.deliveryAddress,
+          deliveryDate: item.date,
           quantity: qty,
           deliveryMethod: delivery,
           deliveryCharge,
@@ -758,6 +808,7 @@ function App() {
         const data = await res.json();
         if (data.order) {
           newOrder.id = data.order.id;
+          newOrder.status = data.order.status || "Pending";
         }
       }
     } catch (e) {
@@ -1138,6 +1189,7 @@ function App() {
       "availability",
       `📅 ${t("availability")}`,
     ],
+    ["farmer-bookings", "📦 Customer Bookings"],
     ["markets", `🏪 ${t("markets")}`],
     ["weather", `🌦️ ${t("weather")}`],
     ["waste", `♻️ ${t("waste")}`],
@@ -1153,6 +1205,154 @@ function App() {
   ];
 
   const menu = role === "consumer" ? consumerMenu : farmerMenu;
+
+  if (!currentUser) {
+    return (
+      <div style={{ minHeight: "100vh", backgroundColor: "#f8fafc", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "20px", fontFamily: "sans-serif" }}>
+        <div style={{ maxWidth: "460px", width: "100%", backgroundColor: "#ffffff", borderRadius: "16px", padding: "32px", boxShadow: "0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1)", border: "1px solid #e2e8f0" }}>
+          
+          <div style={{ textAlign: "center", marginBottom: "24px" }}>
+            <div style={{ fontSize: "48px", marginBottom: "8px" }}>🌱</div>
+            <h1 style={{ fontSize: "22px", fontWeight: "800", color: "#1e293b", margin: 0 }}>SmartFarm Harvest System</h1>
+            <p style={{ fontSize: "13px", color: "#64748b", marginTop: "6px" }}>Smart Harvest • Better Net Profit • Zero Food Waste</p>
+          </div>
+
+          <div style={{ display: "flex", borderRadius: "8px", backgroundColor: "#f1f5f9", padding: "4px", marginBottom: "20px" }}>
+            <button
+              type="button"
+              style={{ flex: 1, padding: "10px", borderRadius: "6px", border: "none", backgroundColor: !authIsRegister ? "#ffffff" : "transparent", color: !authIsRegister ? "#0f172a" : "#64748b", fontWeight: "700", cursor: "pointer", boxShadow: !authIsRegister ? "0 1px 3px rgba(0,0,0,0.1)" : "none" }}
+              onClick={() => { setAuthIsRegister(false); setAuthError(""); }}
+            >
+              Sign In
+            </button>
+            <button
+              type="button"
+              style={{ flex: 1, padding: "10px", borderRadius: "6px", border: "none", backgroundColor: authIsRegister ? "#ffffff" : "transparent", color: authIsRegister ? "#0f172a" : "#64748b", fontWeight: "700", cursor: "pointer", boxShadow: authIsRegister ? "0 1px 3px rgba(0,0,0,0.1)" : "none" }}
+              onClick={() => { setAuthIsRegister(true); setAuthError(""); }}
+            >
+              Create Account
+            </button>
+          </div>
+
+          {authError && (
+            <div style={{ backgroundColor: "#fef2f2", border: "1px solid #fca5a5", color: "#991b1b", padding: "10px", borderRadius: "8px", fontSize: "13px", marginBottom: "16px" }}>
+              ⚠️ {authError}
+            </div>
+          )}
+
+          <form onSubmit={handleAuthSubmit} style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
+            {authIsRegister && (
+              <label style={{ display: "flex", flexDirection: "column", fontSize: "13px", fontWeight: "600", color: "#334155" }}>
+                Full Name
+                <input
+                  type="text"
+                  required
+                  value={authInput.name}
+                  onChange={(e) => setAuthInput({ ...authInput, name: e.target.value })}
+                  placeholder="e.g. Kumar"
+                  style={{ padding: "10px 12px", borderRadius: "8px", border: "1px solid #cbd5e1", marginTop: "4px" }}
+                />
+              </label>
+            )}
+
+            <label style={{ display: "flex", flexDirection: "column", fontSize: "13px", fontWeight: "600", color: "#334155" }}>
+              Email Address
+              <input
+                type="email"
+                required
+                value={authInput.email}
+                onChange={(e) => setAuthInput({ ...authInput, email: e.target.value })}
+                placeholder="e.g. farmer@smartfarm.com"
+                style={{ padding: "10px 12px", borderRadius: "8px", border: "1px solid #cbd5e1", marginTop: "4px" }}
+              />
+            </label>
+
+            <label style={{ display: "flex", flexDirection: "column", fontSize: "13px", fontWeight: "600", color: "#334155" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span>Password</span>
+                {!authIsRegister && (
+                  <button
+                    type="button"
+                    style={{ background: "none", border: "none", color: "#16a34a", fontSize: "12px", cursor: "pointer", padding: 0 }}
+                    onClick={() => alert("Password reset instructions sent to your registered email.")}
+                  >
+                    Forgot Password?
+                  </button>
+                )}
+              </div>
+              <div style={{ position: "relative", marginTop: "4px" }}>
+                <input
+                  type={showPassword ? "text" : "password"}
+                  required
+                  value={authInput.password}
+                  onChange={(e) => setAuthInput({ ...authInput, password: e.target.value })}
+                  placeholder="••••••••"
+                  style={{ width: "100%", padding: "10px 38px 10px 12px", borderRadius: "8px", border: "1px solid #cbd5e1", boxSizing: "border-box" }}
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(!showPassword)}
+                  style={{ position: "absolute", right: "10px", top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", fontSize: "14px", color: "#64748b" }}
+                >
+                  {showPassword ? "🙈" : "👁️"}
+                </button>
+              </div>
+            </label>
+
+            <label style={{ display: "flex", flexDirection: "column", fontSize: "13px", fontWeight: "600", color: "#334155" }}>
+              Account Role
+              <select
+                value={authInput.role}
+                onChange={(e) => setAuthInput({ ...authInput, role: e.target.value })}
+                style={{ padding: "10px 12px", borderRadius: "8px", border: "1px solid #cbd5e1", marginTop: "4px" }}
+              >
+                <option value="farmer">👨‍🌾 Farmer</option>
+                <option value="consumer">🥗 Customer / Buyer</option>
+              </select>
+            </label>
+
+            <button
+              className="primary"
+              type="submit"
+              disabled={authLoading}
+              style={{ padding: "12px", borderRadius: "8px", fontSize: "15px", fontWeight: "700", marginTop: "8px", cursor: "pointer", backgroundColor: "#16a34a", color: "#fff", border: "none" }}
+            >
+              {authLoading ? "Authenticating..." : authIsRegister ? "Create Account & Sign In" : "Sign In to Dashboard"}
+            </button>
+          </form>
+
+          <div style={{ marginTop: "24px", paddingTop: "20px", borderTop: "1px solid #e2e8f0" }}>
+            <p style={{ fontSize: "11px", fontWeight: "700", color: "#64748b", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "12px", textAlign: "center" }}>⚡ Quick Demo One-Click Sign In</p>
+            <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+              <button
+                type="button"
+                onClick={() => quickDemoLogin("farmer@smartfarm.com", "farmer123", "farmer")}
+                style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 16px", borderRadius: "8px", border: "1px solid #cbd5e1", backgroundColor: "#f8fafc", cursor: "pointer", textAlign: "left" }}
+              >
+                <div>
+                  <span style={{ fontWeight: "700", display: "block", color: "#0f172a", fontSize: "14px" }}>👨‍🌾 Demo Farmer</span>
+                  <small style={{ color: "#64748b" }}>farmer@smartfarm.com</small>
+                </div>
+                <span style={{ fontSize: "12px", fontWeight: "700", color: "#16a34a" }}>Sign In →</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => quickDemoLogin("consumer@smartfarm.com", "consumer123", "consumer")}
+                style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 16px", borderRadius: "8px", border: "1px solid #cbd5e1", backgroundColor: "#f8fafc", cursor: "pointer", textAlign: "left" }}
+              >
+                <div>
+                  <span style={{ fontWeight: "700", display: "block", color: "#0f172a", fontSize: "14px" }}>🥗 Demo Customer</span>
+                  <small style={{ color: "#64748b" }}>consumer@smartfarm.com</small>
+                </div>
+                <span style={{ fontSize: "12px", fontWeight: "700", color: "#2563eb" }}>Sign In →</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="app">
@@ -3255,6 +3455,102 @@ function App() {
                 </div>
               )}
 
+            </section>
+          )}
+
+          {/* ================= FARMER CUSTOMER BOOKINGS ================= */}
+
+          {page === "farmer-bookings" && (
+            <section className="panel">
+              <div className="pageTitle">
+                <span className="badge">FARMER MANAGEMENT</span>
+                <h2>📦 Customer Pre-Bookings & Orders</h2>
+                <p>Review customer pre-bookings and manage order statuses.</p>
+              </div>
+
+              {orders.length === 0 ? (
+                <div className="empty" style={{ textAlign: "center", padding: "30px" }}>
+                  <div style={{ fontSize: "40px" }}>📦</div>
+                  <h3>No customer orders received yet</h3>
+                  <p style={{ fontSize: "13px", color: "#64748b" }}>When customers pre-book produce, orders will appear here automatically.</p>
+                </div>
+              ) : (
+                <div className="tableWrapper" style={{ overflowX: "auto" }}>
+                  <table className="dataTable" style={{ width: "100%", borderCollapse: "collapse" }}>
+                    <thead>
+                      <tr style={{ backgroundColor: "#f8fafc", textAlign: "left" }}>
+                        <th style={{ padding: "10px" }}>Booking ID</th>
+                        <th style={{ padding: "10px" }}>Customer Name</th>
+                        <th style={{ padding: "10px" }}>Product / Crop</th>
+                        <th style={{ padding: "10px" }}>Quantity</th>
+                        <th style={{ padding: "10px" }}>Total Amount</th>
+                        <th style={{ padding: "10px" }}>Booking Date</th>
+                        <th style={{ padding: "10px" }}>Delivery/Pickup Date</th>
+                        <th style={{ padding: "10px" }}>Delivery Address</th>
+                        <th style={{ padding: "10px" }}>Status</th>
+                        <th style={{ padding: "10px" }}>Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {orders.map((o) => (
+                        <tr key={o.id} style={{ borderBottom: "1px solid #e2e8f0" }}>
+                          <td style={{ padding: "10px" }}><strong>#{o.id}</strong></td>
+                          <td style={{ padding: "10px" }}>
+                            <strong>{o.customerName || "Customer"}</strong>
+                            {o.customerPhone && <div style={{ fontSize: "12px", color: "#64748b" }}>📞 {o.customerPhone}</div>}
+                          </td>
+                          <td style={{ padding: "10px" }}>{cropData[o.crop]?.icon || "🌾"} {o.crop}</td>
+                          <td style={{ padding: "10px" }}>{o.quantity} kg</td>
+                          <td style={{ padding: "10px" }}><strong>₹{o.total ? o.total.toLocaleString("en-IN") : 0}</strong></td>
+                          <td style={{ padding: "10px" }}>{o.createdAt ? new Date(o.createdAt).toLocaleDateString() : today}</td>
+                          <td style={{ padding: "10px" }}>{o.deliveryDate || o.date || "Scheduled"}</td>
+                          <td style={{ padding: "10px" }}>{o.deliveryAddress || o.area || "Local Area"}</td>
+                          <td style={{ padding: "10px" }}>
+                            <span style={{
+                              padding: "4px 10px",
+                              borderRadius: "6px",
+                              fontSize: "12px",
+                              fontWeight: "700",
+                              backgroundColor: o.status === "Accepted" ? "#ecfdf5" : o.status === "Completed" ? "#eff6ff" : o.status === "Rejected" ? "#fef2f2" : "#fefce8",
+                              color: o.status === "Accepted" ? "#047857" : o.status === "Completed" ? "#1d4ed8" : o.status === "Rejected" ? "#b91c1c" : "#a16207"
+                            }}>
+                              {o.status || "Pending"}
+                            </span>
+                          </td>
+                          <td style={{ padding: "10px" }}>
+                            <div style={{ display: "flex", gap: "6px" }}>
+                              <button
+                                className="primary"
+                                style={{ padding: "6px 10px", fontSize: "12px", backgroundColor: "#059669", border: "none", color: "#fff", borderRadius: "6px", cursor: "pointer" }}
+                                onClick={() => updateOrderStatus(o.id, "Accepted")}
+                                disabled={o.status === "Accepted"}
+                              >
+                                Accept
+                              </button>
+                              <button
+                                className="secondary"
+                                style={{ padding: "6px 10px", fontSize: "12px", backgroundColor: "#dc2626", borderColor: "#dc2626", color: "#fff", borderRadius: "6px", cursor: "pointer" }}
+                                onClick={() => updateOrderStatus(o.id, "Rejected")}
+                                disabled={o.status === "Rejected"}
+                              >
+                                Reject
+                              </button>
+                              <button
+                                className="primary"
+                                style={{ padding: "6px 10px", fontSize: "12px", backgroundColor: "#2563eb", border: "none", color: "#fff", borderRadius: "6px", cursor: "pointer" }}
+                                onClick={() => updateOrderStatus(o.id, "Completed")}
+                                disabled={o.status === "Completed"}
+                              >
+                                Complete
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </section>
           )}
 

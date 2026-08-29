@@ -508,12 +508,25 @@ app.post("/api/ai/harvest-advisor", (req, res) => {
   }
 });
 
+try {
+  db.exec("ALTER TABLE orders ADD COLUMN customer_phone TEXT DEFAULT ''");
+} catch (e) {}
+try {
+  db.exec("ALTER TABLE orders ADD COLUMN delivery_address TEXT DEFAULT ''");
+} catch (e) {}
+try {
+  db.exec("ALTER TABLE orders ADD COLUMN delivery_date TEXT DEFAULT ''");
+} catch (e) {}
+
 // ---------- PRE-BOOK & ORDERS ----------
 
 app.post("/api/orders", (req, res) => {
   const {
     listingId,
     customerName,
+    customerPhone,
+    deliveryAddress,
+    deliveryDate,
     quantity,
     deliveryMethod,
     deliveryCharge: customDeliveryCharge
@@ -566,6 +579,9 @@ app.post("/api/orders", (req, res) => {
       : (deliveryMethod.toUpperCase() === "DELIVERY" ? 80 : 0);
 
     const custName = customerName || "Customer";
+    const custPhone = customerPhone || "";
+    const delivAddr = deliveryAddress || "";
+    const delivDate = deliveryDate || listing.harvest_date;
 
     const transaction = db.transaction(() => {
       db.prepare(`
@@ -576,11 +592,14 @@ app.post("/api/orders", (req, res) => {
 
       const result = db.prepare(`
         INSERT INTO orders
-        (listing_id, customer_name, quantity, delivery_method, delivery_charge)
-        VALUES (?, ?, ?, ?, ?)
+        (listing_id, customer_name, customer_phone, delivery_address, delivery_date, quantity, delivery_method, delivery_charge, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Pending')
       `).run(
         listingId,
         custName,
+        custPhone,
+        delivAddr,
+        delivDate,
         qty,
         deliveryMethod,
         deliveryCharge
@@ -603,17 +622,21 @@ app.post("/api/orders", (req, res) => {
       order: {
         id: orderId,
         listingId,
+        customerName: custName,
+        customerPhone: custPhone,
+        deliveryAddress: delivAddr,
+        deliveryDate: delivDate,
         crop: listing.crop,
         quantity: qty,
         farmer: "Demo Farmer",
         area: listing.area,
-        date: listing.harvest_date,
+        date: delivDate,
         market: listing.market,
         productTotal,
         deliveryMethod,
         deliveryCharge,
         total,
-        status: "Pre-booked"
+        status: "Pending"
       },
       remainingQuantity: updatedListing.available
     });
@@ -657,22 +680,45 @@ app.get("/api/orders", (req, res) => {
       return {
         id: r.id,
         listingId: r.listing_id,
+        customerName: r.customer_name || "Customer",
+        customerPhone: r.customer_phone || "",
+        deliveryAddress: r.delivery_address || "",
+        deliveryDate: r.delivery_date || r.harvest_date,
         crop: r.crop,
         quantity: r.quantity,
         farmer: r.farmer_name,
         area: r.area,
-        date: r.harvest_date,
+        date: r.delivery_date || r.harvest_date,
         market: r.market,
         productTotal,
         deliveryMethod: r.delivery_method,
         deliveryCharge,
         total: productTotal + deliveryCharge,
-        status: r.status === "PRE_BOOKED" ? "Pre-booked" : r.status,
+        status: r.status === "PRE_BOOKED" ? "Pending" : r.status,
         createdAt: r.created_at
       };
     });
 
     res.json(formatted);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.put("/api/orders/:id/status", (req, res) => {
+  const { id } = req.params;
+  const { status } = req.body;
+
+  if (!status) {
+    return res.status(400).json({ error: "Status is required" });
+  }
+
+  try {
+    const result = db.prepare("UPDATE orders SET status = ? WHERE id = ?").run(status, id);
+    if (result.changes === 0) {
+      return res.status(404).json({ error: "Order not found" });
+    }
+    res.json({ success: true, id: Number(id), status });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
